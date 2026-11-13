@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Optional, List
+import json
 
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -24,6 +25,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 app = FastAPI(title="Rehab-Sport Protokoll API")
+
 
 # --- Adatbázis modellek ---
 
@@ -69,7 +71,7 @@ class ProtocolRule(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     diagnosis = Column(String, nullable=False)
-    criteria_json = Column(Text, nullable=False)  # strukturált küszöbértékek
+    criteria_json = Column(Text, nullable=False)  # strukturált küszöbértékek, JSON string
     recommended_action = Column(Text, nullable=False)
     source_literature_id = Column(Integer, ForeignKey("literature_candidates.id"), nullable=True)
     approved = Column(Boolean, default=False)
@@ -99,6 +101,7 @@ class ProtocolRecommendationLog(Base):
 
 Base.metadata.create_all(bind=engine)
 
+
 # --- DB dependency ---
 def get_db():
     db = SessionLocal()
@@ -106,6 +109,7 @@ def get_db():
         yield db
     finally:
         db.close()
+
 
 # --- Auth segédfüggvények ---
 def verify_password(plain, hashed):
@@ -137,6 +141,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
     return user
+
 
 # --- Pydantic sémák ---
 class UserCreate(BaseModel):
@@ -171,141 +176,54 @@ class AssessmentOut(BaseModel):
     class Config:
         from_attributes = True
 
+class ProtocolRecommendationLogOut(BaseModel):
+    id: int
+    athlete_id: int
+    assessment_id: int
+    protocol_rule_id: int
+    recommended_at: datetime
+    decision: str
+    decision_note: Optional[str] = None
+    class Config:
+        from_attributes = True
+
 class RecommendationDecision(BaseModel):
     decision: str  # "accepted" vagy "rejected"
     decision_note: Optional[str] = None
 
-# --- Health check ---
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "time": datetime.utcnow()}
 
-# --- Auth végpontok ---
-@app.post("/auth/register", response_model=Token)
-def register(user_in: UserCreate, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.email == user_in.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Ez az email cím már regisztrálva van")
-    if user_in.role not in ("coach", "athlete"):
-        raise HTTPException(status_code=400, detail="A szerepkör csak 'coach' vagy 'athlete' lehet")
-    user = User(
-        email=user_in.email,
-        hashed_password=get_password_hash(user_in.password),
-        role=user_in.role,
-        full_name=user_in.full_name,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+# --- Kritérium-alapú protokoll-javaslat motor ---
 
-    if user.role == "athlete":
-        athlete = Athlete(user_id=user.id)
-        db.add(athlete)
-        db.commit()
+def run_criteria_engine(assessment: Assessment, db: Session):
+    """
+    Az újonnan rögzített assessment alapján megnézi, van-e olyan
+    jóváhagyott (approved=True) ProtocolRule, amelynek kritériumai
+    teljesülnek. Ha igen, létrehoz egy ProtocolRecommendationLog
+    bejegyzést "pending" státusszal, amit az edzőnek jóvá kell hagynia
+    vagy el kell utasítania.
+    """
+    episode = db.query(InjuryEpisode).filter(
+        InjuryEpisode.id == assessment.injury_episode_id
+    ).first()
+    if not episode:
+        return
 
-    token = create_access_token({"sub": str(user.id)})
-    return {"access_token": token, "token_type": "bearer"}
+    rules = db.query(ProtocolRule).filter(
+        ProtocolRule.diagnosis == episode.diagnosis,
+        ProtocolRule.approved == True,
+    ).all()
 
-@app.post("/auth/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Hibás email vagy jelszó")
-    token = create_access_token({"sub": str(user.id)})
-    return {"access_token": token, "token_type": "bearer"}
+    for rule in rules:
+        if _rule_criteria_met(rule, episode, db):
+            existing = db.query(ProtocolRecommendationLog).filter(
+                ProtocolRecommendationLog.athlete_id == episode.athlete_id,
+                ProtocolRecommendationLog.protocol_rule_id == rule.id,
+                ProtocolRecommendationLog.decision == "pending",
+            ).first()
+            if existing:
+                continue
 
-@app.get("/auth/me")
-def read_current_user(current_user: User = Depends(get_current_user)):
-    return {
-        "id": current_user.id,
-        "email": current_user.email,
-        "full_name": current_user.full_name,
-        "role": current_user.role,
-           }
-    # --- Athlete végpontok ---
-@app.get("/athletes/me", response_model=AthleteOut)
-def get_my_athlete_profile(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if current_user.role != "athlete":
-        raise HTTPException(status_code=403, detail="Csak sportoló szerepkörnek elérhető")
-    athlete = db.query(Athlete).filter(Athlete.user_id == current_user.id).first()
-    if not athlete:
-        raise HTTPException(status_code=404, detail="Sportoló profil nem található")
-    return athlete
-
-@app.get("/athletes", response_model=List[AthleteOut])
-def list_athletes(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if current_user.role != "coach":
-        raise HTTPException(status_code=403, detail="Csak edző szerepkörnek elérhető")
-    athletes = db.query(Athlete).filter(Athlete.coach_id == current_user.id).all()
-    return athletes
-
-@app.get("/athletes/{athlete_id}", response_model=AthleteOut)
-def get_athlete(athlete_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    athlete = db.query(Athlete).filter(Athlete.id == athlete_id).first()
-    if not athlete:
-        raise HTTPException(status_code=404, detail="Sportoló nem található")
-    if current_user.role == "athlete" and athlete.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Nincs jogosultság")
-    if current_user.role == "coach" and athlete.coach_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Nincs jogosultság")
-    return athlete
-
-
-# --- Injury episode végpontok ---
-class InjuryEpisodeCreate(BaseModel):
-    athlete_id: int
-    diagnosis: str
-    injury_date: datetime
-
-class InjuryEpisodeOut(BaseModel):
-    id: int
-    athlete_id: int
-    diagnosis: str
-    injury_date: datetime
-    status: str
-    class Config:
-        from_attributes = True
-
-@app.post("/injury-episodes", response_model=InjuryEpisodeOut)
-def create_injury_episode(data: InjuryEpisodeCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if current_user.role != "coach":
-        raise HTTPException(status_code=403, detail="Csak edző hozhat létre sérülési epizódot")
-    episode = InjuryEpisode(
-        athlete_id=data.athlete_id,
-        diagnosis=data.diagnosis,
-        injury_date=data.injury_date,
-    )
-    db.add(episode)
-    db.commit()
-    db.refresh(episode)
-    return episode
-
-@app.get("/injury-episodes/{athlete_id}", response_model=List[InjuryEpisodeOut])
-def list_injury_episodes(athlete_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    episodes = db.query(InjuryEpisode).filter(InjuryEpisode.athlete_id == athlete_id).all()
-    return episodes
-
-
-# --- Assessment végpontok ---
-@app.post("/assessments", response_model=AssessmentOut)
-def create_assessment(data: AssessmentCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    assessment = Assessment(
-        injury_episode_id=data.injury_episode_id,
-        metric_name=data.metric_name,
-        metric_value=data.metric_value,
-        notes=data.notes,
-        created_by=current_user.id,
-    )
-    db.add(assessment)
-    db.commit()
-    db.refresh(assessment)
-
-    # Automatikus kritérium-kiértékelés futtatása az új assessment alapján
-    run_criteria_engine(assessment, db)
-
-    return assessment
-
-@app.get("/assessments/{injury_episode_id}", response_model=List[AssessmentOut])
-def list_assessments(injury_episode_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    assessments = db.query(Assessment).filter(Assessment.injury_episode_id == injury_episode_id).all()
-    return assessments
+            log_entry = ProtocolRecommendationLog(
+                athlete_id=episode.athlete_id,
+                assessment_id=assessment.id,
+                protocol
