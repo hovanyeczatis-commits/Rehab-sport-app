@@ -222,3 +222,90 @@ def read_current_user(current_user: User = Depends(get_current_user)):
         "full_name": current_user.full_name,
         "role": current_user.role,
            }
+    # --- Athlete végpontok ---
+@app.get("/athletes/me", response_model=AthleteOut)
+def get_my_athlete_profile(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.role != "athlete":
+        raise HTTPException(status_code=403, detail="Csak sportoló szerepkörnek elérhető")
+    athlete = db.query(Athlete).filter(Athlete.user_id == current_user.id).first()
+    if not athlete:
+        raise HTTPException(status_code=404, detail="Sportoló profil nem található")
+    return athlete
+
+@app.get("/athletes", response_model=List[AthleteOut])
+def list_athletes(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.role != "coach":
+        raise HTTPException(status_code=403, detail="Csak edző szerepkörnek elérhető")
+    athletes = db.query(Athlete).filter(Athlete.coach_id == current_user.id).all()
+    return athletes
+
+@app.get("/athletes/{athlete_id}", response_model=AthleteOut)
+def get_athlete(athlete_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    athlete = db.query(Athlete).filter(Athlete.id == athlete_id).first()
+    if not athlete:
+        raise HTTPException(status_code=404, detail="Sportoló nem található")
+    if current_user.role == "athlete" and athlete.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Nincs jogosultság")
+    if current_user.role == "coach" and athlete.coach_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Nincs jogosultság")
+    return athlete
+
+
+# --- Injury episode végpontok ---
+class InjuryEpisodeCreate(BaseModel):
+    athlete_id: int
+    diagnosis: str
+    injury_date: datetime
+
+class InjuryEpisodeOut(BaseModel):
+    id: int
+    athlete_id: int
+    diagnosis: str
+    injury_date: datetime
+    status: str
+    class Config:
+        from_attributes = True
+
+@app.post("/injury-episodes", response_model=InjuryEpisodeOut)
+def create_injury_episode(data: InjuryEpisodeCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.role != "coach":
+        raise HTTPException(status_code=403, detail="Csak edző hozhat létre sérülési epizódot")
+    episode = InjuryEpisode(
+        athlete_id=data.athlete_id,
+        diagnosis=data.diagnosis,
+        injury_date=data.injury_date,
+    )
+    db.add(episode)
+    db.commit()
+    db.refresh(episode)
+    return episode
+
+@app.get("/injury-episodes/{athlete_id}", response_model=List[InjuryEpisodeOut])
+def list_injury_episodes(athlete_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    episodes = db.query(InjuryEpisode).filter(InjuryEpisode.athlete_id == athlete_id).all()
+    return episodes
+
+
+# --- Assessment végpontok ---
+@app.post("/assessments", response_model=AssessmentOut)
+def create_assessment(data: AssessmentCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    assessment = Assessment(
+        injury_episode_id=data.injury_episode_id,
+        metric_name=data.metric_name,
+        metric_value=data.metric_value,
+        notes=data.notes,
+        created_by=current_user.id,
+    )
+    db.add(assessment)
+    db.commit()
+    db.refresh(assessment)
+
+    # Automatikus kritérium-kiértékelés futtatása az új assessment alapján
+    run_criteria_engine(assessment, db)
+
+    return assessment
+
+@app.get("/assessments/{injury_episode_id}", response_model=List[AssessmentOut])
+def list_assessments(injury_episode_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    assessments = db.query(Assessment).filter(Assessment.injury_episode_id == injury_episode_id).all()
+    return assessments
