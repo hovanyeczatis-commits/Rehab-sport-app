@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sportolók Nyilvántartása</title>
+<style>
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+    background: #f2f4f7;
+    margin: 0;
+    padding: 0;
+    color: #1a1a1a;
+  }
+  header {
+    background: #1e5f8c;
+    color: white;
+    padding: 20px 16px;
+    text-align: center;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 1.4rem;
+  }
+  .container {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 16px;
+  }
+  .card {
+    background: white;
+    border-radius: 12px;
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+  .card h2 {
+    margin-top: 0;
+    font-size: 1.1rem;
+    color: #1e5f8c;
+  }
+  label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-top: 12px;
+    margin-bottom: 4px;
+    color: #444;
+  }
+  input, select {
+    width: 100%;
+    padding: 12px;
+    font-size: 1rem;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    background: #fafafa;
+  }
+  input:focus, select:focus {
+    outline: none;
+    border-color: #1e5f8c;
+    background: white;
+  }
+  button {
+    width: 100%;
+    margin-top: 18px;
+    padding: 14px;
+    font-size: 1rem;
+    font-weight: 600;
+    color: white;
+    background: #1e5f8c;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  button:active {
+    background: #164a6e;
+  }
+  .athlete-item {
+    border-bottom: 1px solid #eee;
+    padding: 12px 0;
+  }
+  .athlete-item:last-child {
+    border-bottom: none;
+  }
+  .athlete-name {
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: #1a1a1a;
+  }
+  .athlete-details {
+    font-size: 0.85rem;
+    color: #666;
+    margin-top: 4px;
+  }
+  .badge {
+    display: inline-block;
+    background: #e8f1f8;
+    color: #1e5f8c;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-right: 6px;
+  }
+  .status-msg {
+    text-align: center;
+    padding: 10px;
+    border-radius: 8px;
+    margin-top: 12px;
+    font-size: 0.9rem;
+    display: none;
+  }
+  .status-msg.success {
+    background: #e3f7e9;
+    color: #1b7a3a;
+    display: block;
+  }
+  .status-msg.error {
+    background: #fdeaea;
+    color: #b02a2a;
+    display: block;
+  }
+  .empty-state {
+    text-align: center;
+    color: #888;
+    padding: 20px;
+    font-size: 0.9rem;
+  }
+  .loading {
+    text-align: center;
+    color: #888;
+    padding: 20px;
+  }
+</style>
+</head>
+<body>
+ 
+<header>
+  <h1>🏃 Sportolók Nyilvántartása</h1>
+</header>
+ 
+<div class="container">
+ 
+  <div class="card">
+    <h2>➕ Új sportoló felvétele</h2>
+    <form id="athleteForm">
+      <label for="name">Név</label>
+      <input type="text" id="name" required placeholder="pl. Kovács Anna">
+ 
+      <label for="sport">Sportág</label>
+      <input type="text" id="sport" required placeholder="pl. Úszás">
+ 
+      <label for="birth_date">Születési dátum</label>
+      <input type="date" id="birth_date" required>
+ 
+      <label for="sex">Nem</label>
+      <select id="sex" required>
+        <option value="">Válassz...</option>
+        <option value="Férfi">Férfi</option>
+        <option value="Nő">Nő</option>
+      </select>
+ 
+      <label for="height_cm">Magasság (cm)</label>
+      <input type="number" id="height_cm" required placeholder="pl. 175">
+ 
+      <label for="weight_kg">Testsúly (kg)</label>
+      <input type="number" id="weight_kg" required placeholder="pl. 68">
+ 
+      <button type="submit">Sportoló mentése</button>
+      <div id="statusMsg" class="status-msg"></div>
+    </form>
+  </div>
+ 
+  <div class="card">
+    <h2>📋 Sportolók listája</h2>
+    <div id="athleteList">
+      <div class="loading">Betöltés...</div>
+    </div>
+  </div>
+ 
+</div>
+ 
+<script>
+  const API_URL = "https://rehab-sport-app-production.up.railway.app";
+ 
+  const form = document.getElementById('athleteForm');
+  const statusMsg = document.getElementById('statusMsg');
+  const athleteList = document.getElementById('athleteList');
+ 
+  // Sportolók betöltése és megjelenítése
+  async function loadAthletes() {
+    athleteList.innerHTML = '<div class="loading">Betöltés...</div>';
+    try {
+      const res = await fetch(`${API_URL}/athletes`);
+      if (!res.ok) throw new Error('Hiba a lekérdezés során');
+      const athletes = await res.json();
+ 
+      if (athletes.length === 0) {
+        athleteList.innerHTML = '<div class="empty-state">Még nincs felvéve sportoló.</div>';
+        return;
+      }
+ 
+      // Fordított sorrend, hogy a legújabb legyen felül
+      const sorted = [...athletes].reverse();
+ 
+      athleteList.innerHTML = sorted.map(a => `
+        <div class="athlete-item">
+          <div class="athlete-name">${escapeHtml(a.name)}</div>
+          <div class="athlete-details">
+            <span class="badge">${escapeHtml(a.sport)}</span>
+            <span class="badge">${escapeHtml(a.sex)}</span>
+            ${formatAge(a.birth_date)} &middot; ${a.height_cm} cm &middot; ${a.weight_kg} kg
+          </div>
+        </div>
+      `).join('');
+    } catch (err) {
+      athleteList.innerHTML = `<div class="empty-state">Hiba történt a betöltéskor: ${err.message}</div>`;
+    }
+  }
+ 
+  function formatAge(birthDateStr) {
+    const birth = new Date(birthDateStr);
+    const today = new Date();
+    let age = today.getFullYear() - birth.getFullYear();
+    const m = today.getMonth() - birth.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) {
+      age--;
+    }
+    return `${age} éves`;
+  }
+ 
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+ 
+  function showStatus(message, type) {
+    statusMsg.textContent = message;
+    statusMsg.className = `status-msg ${type}`;
+    setTimeout(() => {
+      statusMsg.className = 'status-msg';
+    }, 3000);
+  }
+ 
+  // Új sportoló mentése
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+ 
+    const newAthlete = {
+      name: document.getElementById('name').value.trim(),
+      sport: document.getElementById('sport').value.trim(),
+      birth_date: document.getElementById('birth_date').value,
+      sex: document.getElementById('sex').value,
+      height_cm: parseInt(document.getElementById('height_cm').value, 10),
+      weight_kg: parseInt(document.getElementById('weight_kg').value, 10)
+    };
+ 
+    try {
+      const res = await fetch(`${API_URL}/athletes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newAthlete)
+      });
+ 
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.detail?.[0]?.msg || 'Mentési hiba');
+      }
+ 
+      showStatus('✅ Sportoló sikeresen mentve!', 'success');
+      form.reset();
+      loadAthletes();
+    } catch (err) {
+      showStatus(`❌ Hiba: ${err.message}`, 'error');
+    }
+  });
+ 
+  // Oldal betöltésekor azonnal lekérjük a listát
+  loadAthletes();
+</script>
+ 
+</body>
+</html>
