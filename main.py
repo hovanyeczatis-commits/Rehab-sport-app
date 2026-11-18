@@ -228,7 +228,13 @@ class RiskFlagOut(BaseModel):
 
 app = FastAPI(title="Rehab & RTP Edzéstámogató Rendszer")
 
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # ideiglenesen mindenkit engedünk
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 @app.get("/")
 def root():
     return {"status": "ok", "message": "Rehab-sport-app API fut"}
