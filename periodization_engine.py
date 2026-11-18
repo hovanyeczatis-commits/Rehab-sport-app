@@ -1,3 +1,4 @@
+"""
 periodization_engine.py
 Szabályalapú periodizációs döntési motor.
 Bemenet: sportoló profilja -> Kimenet: javasolt heti struktúra (zóna-eloszlás, erő-paraméterek)
